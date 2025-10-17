@@ -1,0 +1,33 @@
+services:
+  http10:
+    build: .
+    image: so-http10:dev
+    container_name: so-http10
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+    - WORKERS_ISPRIME=2
+    - QUEUE_ISPRIME=64
+    - WORKERS_FACTOR=2
+    - QUEUE_FACTOR=64
+    - WORKERS_PI=1
+    - QUEUE_PI=8
+    - WORKERS_MANDELBROT=1
+    - QUEUE_MANDELBROT=4
+    - WORKERS_MATRIXMUL=1
+    - QUEUE_MATRIXMUL=8
+    - WORKERS_WORDCOUNT=2
+    - QUEUE_WORDCOUNT=64
+    - WORKERS_GREP=2
+    - QUEUE_GREP=64
+    - WORKERS_HASHFILE=2
+    - QUEUE_HASHFILE=64
+
+
+  dev:
+    image: golang:1.22-bookworm
+    working_dir: /app
+    volumes:
+      - .:/app
