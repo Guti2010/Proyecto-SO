@@ -54,6 +54,16 @@ func InitPools(cfg map[string]int) {
 	_ = manager.Register("hashfile", sched.NewPool("hashfile",
 		func(_ context.Context, p map[string]string) resp.Result { return handlers.HashFileJSON(p) },
 		cfg["workers.hashfile"], cfg["queue.hashfile"]))
+
+	// IO (agrega estas dos líneas)
+	_ = manager.Register("sortfile", sched.NewPool("sortfile",
+		func(_ context.Context, p map[string]string) resp.Result { return handlers.SortFileJSON(p) },
+		cfg["workers.sortfile"], cfg["queue.sortfile"]))
+
+	_ = manager.Register("compress", sched.NewPool("compress",
+		func(_ context.Context, p map[string]string) resp.Result { return handlers.CompressJSON(p) },
+		cfg["workers.compress"], cfg["queue.compress"]))
+
 }
 
 // Dispatch resuelve rutas sobre HTTP/1.0 (GET).
@@ -147,6 +157,10 @@ func Dispatch(method, target string) resp.Result {
 		r, _ := submitSync("grep", args, 60*time.Second); return r
 	case "/hashfile":
 		r, _ := submitSync("hashfile", args, 60*time.Second); return r	
+	case "/sortfile":
+		r, _ := submitSync("sortfile", args, 10*time.Minute); return r
+	case "/compress":
+		r, _ := submitSync("compress", args, 10*time.Minute); return r
 	}
 
 	return resp.NotFound("not_found", "route")
