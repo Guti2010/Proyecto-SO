@@ -1,18 +1,22 @@
 package router
 
 import (
+	"encoding/json"
 	"context"
 	"strconv"
 	"time"
 
 	"so-http10-demo/internal/handlers"
 	"so-http10-demo/internal/http10"
+	"so-http10-demo/internal/jobs"
 	"so-http10-demo/internal/resp"
 	"so-http10-demo/internal/sched"
 )
 
 // Manager global para pools.
 var manager = sched.NewManager()
+
+var jobman = jobs.NewManager(manager, 10*time.Minute)
 
 // InitPools registra pools con configuración.
 func InitPools(cfg map[string]int) {
@@ -124,6 +128,46 @@ func Dispatch(method, target string) resp.Result {
 			}
 		}
 		return resp.PlainOK("ok " + strconv.Itoa(ok) + "/" + strconv.Itoa(n) + "\n")
+	
+	case "/jobs/submit":
+		task := args["task"]
+		if task == "" {
+			return resp.BadReq("task", "task=<pool_name> required")
+		}
+		// timeout de ejecución (ms)
+		tms := atoi(args["timeout_ms"])
+		if tms <= 0 {
+			tms = 30000
+		}
+		// Filtra args: no pasar "task" ni "timeout_ms" al worker
+		params := make(map[string]string, len(args))
+		for k, v := range args {
+			if k == "task" || k == "timeout_ms" {
+				continue
+			}
+			params[k] = v
+		}
+		id := jobman.Submit(task, params, time.Duration(tms)*time.Millisecond)
+		if id == "" {
+			return resp.NotFound("no_pool", "pool not found")
+		}
+		out := map[string]any{"job_id": id, "status": "queued"}
+		b, _ := json.Marshal(out)
+		return resp.JSONOK(string(b))
+
+	case "/jobs/get":
+		id := args["id"]
+		if id == "" {
+			return resp.BadReq("id", "id required")
+		}
+		if js, ok := jobman.SnapshotJSON(id); ok {
+			return resp.JSONOK(js)
+		}
+		return resp.NotFound("not_found", "job not found")
+
+	case "/jobs/list":
+		return resp.JSONOK(jobman.ListJSON())
+
 	case "/metrics":
 		return resp.JSONOK(manager.MetricsJSON())
 
