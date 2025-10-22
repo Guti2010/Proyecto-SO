@@ -4,29 +4,58 @@ import (
 	"bufio"
 	"compress/gzip"
 	"container/heap"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"time"
-	"crypto/sha256"
-	"encoding/hex"
-	"regexp"
-
 
 	"so-http10-demo/internal/resp"
 )
 
-// Reusamos sanitize(name) del package handlers (definida en files.go).
-// Reusamos dataDir="/app/data" (definida en files.go).
+// Nota: se reutilizan sanitize(name) y dataDir (definidos en files.go).
+// dataDir := "/app/data"
+
+// -------- util cancelación --------
+
+const checkEvery = 4096 // frecuencia de sondeo barata (potencia de 2 ideal)
+
+func canceled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func ctxErrResult(ctx context.Context) resp.Result {
+	if ctx == nil {
+		return resp.Unavail("canceled", "job canceled")
+	}
+	// devolvemos 503 con detalle
+	return resp.Unavail("canceled", ctx.Err().Error())
+}
 
 // ---------- /wordcount ----------
-// Cuenta líneas, palabras (tokens separados por espacios en blanco) y bytes.
+// Wrappers sin ctx para compatibilidad.
 func WordCountJSON(params map[string]string) resp.Result {
+	return WordCountJSONCtx(context.Background(), params)
+}
+
+// Cuenta líneas, palabras y bytes con cancelación cooperativa.
+func WordCountJSONCtx(ctx context.Context, params map[string]string) resp.Result {
 	name := params["name"]
 	if name == "" {
 		return resp.BadReq("name", "file name required")
@@ -36,7 +65,8 @@ func WordCountJSON(params map[string]string) resp.Result {
 		return resp.BadReq("bad_name", "invalid file name")
 	}
 
-	f, err := os.Open(dataDir + "/" + path)
+	fp := filepath.Join(dataDir, path)
+	f, err := os.Open(fp)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return resp.NotFound("not_found", "file does not exist")
@@ -49,12 +79,19 @@ func WordCountJSON(params map[string]string) resp.Result {
 	var lines, words, bytes int64
 
 	sc := bufio.NewScanner(f)
-	// default token size ~64K por línea; si esperas líneas enormes, ajusta el buffer:
-	// buf := make([]byte, 0, 1024*1024); sc.Buffer(buf, 1024*1024)
+	// Si esperas líneas enormes, ajusta (hasta varios MB)
+	// sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+
+	i := 0
 	for sc.Scan() {
+		if i& (checkEvery-1) == 0 && canceled(ctx) {
+			return ctxErrResult(ctx)
+		}
+		i++
+
 		lines++
 		b := sc.Bytes()
-		bytes += int64(len(b) + 1) // +1 por '\n' que Scanner no incluye
+		bytes += int64(len(b) + 1) // +1 por '\n'
 		inWord := false
 		for _, c := range b {
 			if c > ' ' {
@@ -83,8 +120,11 @@ func WordCountJSON(params map[string]string) resp.Result {
 }
 
 // ---------- /grep ----------
-// Cuenta coincidencias y devuelve las primeras 10 líneas que matchean.
 func GrepJSON(params map[string]string) resp.Result {
+	return GrepJSONCtx(context.Background(), params)
+}
+
+func GrepJSONCtx(ctx context.Context, params map[string]string) resp.Result {
 	name := params["name"]
 	pat := params["pattern"]
 	if name == "" || pat == "" {
@@ -99,7 +139,8 @@ func GrepJSON(params map[string]string) resp.Result {
 		return resp.BadReq("pattern", "invalid regex")
 	}
 
-	f, err := os.Open(dataDir + "/" + path)
+	fp := filepath.Join(dataDir, path)
+	f, err := os.Open(fp)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return resp.NotFound("not_found", "file does not exist")
@@ -112,7 +153,14 @@ func GrepJSON(params map[string]string) resp.Result {
 	sc := bufio.NewScanner(f)
 	matches := 0
 	first := make([]string, 0, 10)
+
+	i := 0
 	for sc.Scan() {
+		if i& (checkEvery-1) == 0 && canceled(ctx) {
+			return ctxErrResult(ctx)
+		}
+		i++
+
 		line := sc.Text()
 		if re.MatchString(line) {
 			matches++
@@ -136,8 +184,11 @@ func GrepJSON(params map[string]string) resp.Result {
 }
 
 // ---------- /hashfile ----------
-// SHA-256 en streaming del archivo.
 func HashFileJSON(params map[string]string) resp.Result {
+	return HashFileJSONCtx(context.Background(), params)
+}
+
+func HashFileJSONCtx(ctx context.Context, params map[string]string) resp.Result {
 	name := params["name"]
 	algo := params["algo"]
 	if algo == "" {
@@ -154,7 +205,8 @@ func HashFileJSON(params map[string]string) resp.Result {
 		return resp.BadReq("bad_name", "invalid file name")
 	}
 
-	f, err := os.Open(dataDir + "/" + path)
+	fp := filepath.Join(dataDir, path)
+	f, err := os.Open(fp)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return resp.NotFound("not_found", "file does not exist")
@@ -165,9 +217,26 @@ func HashFileJSON(params map[string]string) resp.Result {
 
 	start := time.Now()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return resp.IntErr("fs_error", "read error")
+
+	buf := make([]byte, 1<<20) // 1 MiB
+	for {
+		if canceled(ctx) {
+			return ctxErrResult(ctx)
+		}
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			if _, werr := h.Write(buf[:n]); werr != nil {
+				return resp.IntErr("fs_error", "hash write error")
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return resp.IntErr("fs_error", "read error")
+		}
 	}
+
 	out := map[string]any{
 		"file":       path,
 		"algo":       "sha256",
@@ -178,30 +247,16 @@ func HashFileJSON(params map[string]string) resp.Result {
 	return resp.JSONOK(string(b))
 }
 
-// atoi utilidad local (tolerante a error).
-func atoi(s string) int {
-	n, _ := strconv.Atoi(s)
-	return n
+// ---------- /sortfile ----------
+func SortFileJSON(params map[string]string) resp.Result {
+	return SortFileJSONCtx(context.Background(), params)
 }
-
 
 /*
-SortFileJSON
-Ordena un archivo de enteros (uno por línea). Soporta archivos grandes con
-estrategia de “external sort” (divide en chunks ordenados + fusión k-way).
-
-Parámetros:
-  - name=FILE (obligatorio)
-  - algo=merge|quick (opcional; quick = in-memory si cabe; por defecto usa merge)
-  - chunksize=N (opcional; líneas por chunk para external sort; defecto 1_000_000)
-
-Respuesta 200 JSON:
-{
-  "file":"big.txt","sorted_file":"big.txt.sorted",
-  "algo":"merge","chunks":7,"elapsed_ms":..., "bytes_in":..., "bytes_out":...
-}
+Ordena enteros (uno por línea). Si el archivo es grande, hace external sort
+(divide en chunks ordenados y fusiona k-way).
 */
-func SortFileJSON(params map[string]string) resp.Result {
+func SortFileJSONCtx(ctx context.Context, params map[string]string) resp.Result {
 	name := params["name"]
 	if name == "" {
 		return resp.BadReq("name", "file name required")
@@ -234,11 +289,14 @@ func SortFileJSON(params map[string]string) resp.Result {
 	start := time.Now()
 	var chunks int
 	if algo == "quick" {
-		chunks, err = sortInMemory(inPath, outPath)
+		chunks, err = sortInMemoryCtx(ctx, inPath, outPath)
 	} else {
-		chunks, err = externalSort(inPath, outPath, chunkSize)
+		chunks, err = externalSortCtx(ctx, inPath, outPath, chunkSize)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return ctxErrResult(ctx)
+		}
 		return resp.IntErr("sort_error", err.Error())
 	}
 	outInfo, _ := os.Stat(outPath)
@@ -256,9 +314,7 @@ func SortFileJSON(params map[string]string) resp.Result {
 	return resp.JSONOK(string(b))
 }
 
-// sortInMemory: carga todos los enteros en RAM, ordena y escribe salida.
-// Devuelve chunks=1 si todo fue en memoria.
-func sortInMemory(inPath, outPath string) (int, error) {
+func sortInMemoryCtx(ctx context.Context, inPath, outPath string) (int, error) {
 	f, err := os.Open(inPath)
 	if err != nil {
 		return 0, err
@@ -267,9 +323,16 @@ func sortInMemory(inPath, outPath string) (int, error) {
 
 	var nums []int64
 	sc := bufio.NewScanner(f)
-	buf := make([]byte, 0, 1024*1024)
-	sc.Buffer(buf, 1024*1024)
+	buf := make([]byte, 0, 1<<20)
+	sc.Buffer(buf, 1<<20)
+
+	i := 0
 	for sc.Scan() {
+		if i& (checkEvery-1) == 0 && canceled(ctx) {
+			return 0, context.Canceled
+		}
+		i++
+
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
@@ -292,6 +355,9 @@ func sortInMemory(inPath, outPath string) (int, error) {
 	defer out.Close()
 	bw := bufio.NewWriterSize(out, 1<<20)
 	for _, v := range nums {
+		if canceled(ctx) {
+			return 0, context.Canceled
+		}
 		if _, err := bw.WriteString(strconv.FormatInt(v, 10) + "\n"); err != nil {
 			return 0, err
 		}
@@ -302,8 +368,7 @@ func sortInMemory(inPath, outPath string) (int, error) {
 	return 1, nil
 }
 
-// externalSort: divide en chunks ordenados y luego fusiona k-way.
-func externalSort(inPath, outPath string, chunkLines int) (int, error) {
+func externalSortCtx(ctx context.Context, inPath, outPath string, chunkLines int) (int, error) {
 	in, err := os.Open(inPath)
 	if err != nil {
 		return 0, err
@@ -312,10 +377,11 @@ func externalSort(inPath, outPath string, chunkLines int) (int, error) {
 
 	var chunkFiles []string
 	sc := bufio.NewScanner(in)
-	buf := make([]byte, 0, 4<<20) // 4MB por línea si hiciera falta
+	buf := make([]byte, 0, 4<<20)
 	sc.Buffer(buf, 4<<20)
 
 	nums := make([]int64, 0, chunkLines)
+
 	writeChunk := func() (string, error) {
 		if len(nums) == 0 {
 			return "", nil
@@ -328,6 +394,10 @@ func externalSort(inPath, outPath string, chunkLines int) (int, error) {
 		}
 		bw := bufio.NewWriterSize(tmp, 1<<20)
 		for _, v := range nums {
+			if canceled(ctx) {
+				tmp.Close()
+				return "", context.Canceled
+			}
 			if _, err := bw.WriteString(strconv.FormatInt(v, 10) + "\n"); err != nil {
 				tmp.Close()
 				return "", err
@@ -344,7 +414,13 @@ func externalSort(inPath, outPath string, chunkLines int) (int, error) {
 		return name, nil
 	}
 
+	i := 0
 	for sc.Scan() {
+		if i& (checkEvery-1) == 0 && canceled(ctx) {
+			return 0, context.Canceled
+		}
+		i++
+
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
@@ -366,14 +442,14 @@ func externalSort(inPath, outPath string, chunkLines int) (int, error) {
 		return 0, err
 	}
 
-	// Si solo hubo 1 chunk, renómbralo como salida.
+	// si hubo un único chunk, renómbralo
 	if len(chunkFiles) == 1 {
 		return 1, os.Rename(chunkFiles[0], outPath)
 	}
 
-	// Fusión k-way
-	err = kWayMerge(chunkFiles, outPath)
-	// limpiar
+	err = kWayMergeCtx(ctx, chunkFiles, outPath)
+
+	// limpia temporales
 	for _, p := range chunkFiles {
 		_ = os.Remove(p)
 	}
@@ -386,26 +462,32 @@ func externalSort(inPath, outPath string, chunkLines int) (int, error) {
 // --- k-way merge helpers ---
 
 type chunkReader struct {
-	f  *os.File
-	sc *bufio.Scanner
+	f   *os.File
+	sc  *bufio.Scanner
 	val int64
 	eof bool
 }
 
 type minItem struct {
 	val int64
-	idx int // index del reader
+	idx int
 }
 
 type minHeap []minItem
 
-func (h minHeap) Len() int            { return len(h) }
-func (h minHeap) Less(i, j int) bool  { return h[i].val < h[j].val }
-func (h minHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *minHeap) Push(x any)         { *h = append(*h, x.(minItem)) }
-func (h *minHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+func (h minHeap) Len() int           { return len(h) }
+func (h minHeap) Less(i, j int) bool { return h[i].val < h[j].val }
+func (h minHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *minHeap) Push(x any)        { *h = append(*h, x.(minItem)) }
+func (h *minHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
 
-func kWayMerge(parts []string, outPath string) error {
+func kWayMergeCtx(ctx context.Context, parts []string, outPath string) error {
 	if len(parts) == 0 {
 		return errors.New("no chunks")
 	}
@@ -452,7 +534,13 @@ func kWayMerge(parts []string, outPath string) error {
 	defer out.Close()
 	bw := bufio.NewWriterSize(out, 1<<20)
 
+	step := 0
 	for h.Len() > 0 {
+		if step& (checkEvery-1) == 0 && canceled(ctx) {
+			return context.Canceled
+		}
+		step++
+
 		it := heap.Pop(h).(minItem)
 		idx := it.idx
 		if _, err := bw.WriteString(strconv.FormatInt(it.val, 10) + "\n"); err != nil {
@@ -484,21 +572,13 @@ func kWayMerge(parts []string, outPath string) error {
 	return nil
 }
 
-/*
-CompressJSON
-Comprime un archivo de entrada con gzip o xz.
-
-Parámetros:
-  - name=FILE (obligatorio)
-  - codec=gzip|xz  (por defecto gzip)
-
-Respuesta 200 JSON:
-{
-  "file":"big.txt","codec":"gzip","output":"big.txt.gz",
-  "bytes_in": 11388898, "bytes_out": 1234567, "elapsed_ms": ...
-}
-*/
+// ---------- /compress ----------
 func CompressJSON(params map[string]string) resp.Result {
+	return CompressJSONCtx(context.Background(), params)
+}
+
+// Implementación solo gzip (sin dependencia externa para xz).
+func CompressJSONCtx(ctx context.Context, params map[string]string) resp.Result {
 	name := params["name"]
 	if name == "" {
 		return resp.BadReq("name", "file name required")
@@ -508,7 +588,6 @@ func CompressJSON(params map[string]string) resp.Result {
 		return resp.BadReq("bad_name", "invalid file name")
 	}
 
-	// Solo soportamos gzip por ahora
 	codec := params["codec"]
 	if codec == "" {
 		codec = "gzip"
@@ -526,7 +605,6 @@ func CompressJSON(params map[string]string) resp.Result {
 		return resp.IntErr("fs_error", "stat failed")
 	}
 	bytesIn := info.Size()
-
 	outPath := inPath + ".gz"
 
 	in, err := os.Open(inPath)
@@ -535,27 +613,42 @@ func CompressJSON(params map[string]string) resp.Result {
 	}
 	defer in.Close()
 
-	out, err := os.Create(outPath) // truncará si existe
+	out, err := os.Create(outPath)
 	if err != nil {
 		return resp.IntErr("fs_error", "create failed")
 	}
 	defer out.Close()
 
 	start := time.Now()
-
 	zw, err := gzip.NewWriterLevel(out, gzip.BestSpeed)
 	if err != nil {
 		return resp.IntErr("codec", err.Error())
 	}
 
-	_, copyErr := io.Copy(zw, in)
-	closeErr := zw.Close() // importante cerrar para volcar el footer gzip
-
-	if copyErr == nil {
-		copyErr = closeErr
+	buf := make([]byte, 1<<20) // 1 MiB
+	for {
+		if canceled(ctx) {
+			_ = zw.Close()
+			return ctxErrResult(ctx)
+		}
+		n, rerr := in.Read(buf)
+		if n > 0 {
+			if _, werr := zw.Write(buf[:n]); werr != nil {
+				_ = zw.Close()
+				return resp.IntErr("compress_error", werr.Error())
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			_ = zw.Close()
+			return resp.IntErr("fs_error", rerr.Error())
+		}
 	}
-	if copyErr != nil {
-		return resp.IntErr("compress_error", copyErr.Error())
+
+	if err := zw.Close(); err != nil {
+		return resp.IntErr("compress_error", err.Error())
 	}
 
 	outInfo, _ := os.Stat(outPath)
@@ -574,4 +667,10 @@ func CompressJSON(params map[string]string) resp.Result {
 	}
 	b, _ := json.Marshal(outJSON)
 	return resp.JSONOK(string(b))
+}
+
+// atoi utilidad local (tolerante a error).
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }

@@ -3,8 +3,9 @@ package main
 import (
 	"log"
 	"os"
+	"os/signal" 
 	"strconv"
-
+	"syscall"   
 	"so-http10-demo/internal/router"
 	"so-http10-demo/internal/server"
 )
@@ -52,6 +53,15 @@ func main() {
 	"workers.compress":  getenvInt("WORKERS_COMPRESS", 1),
 	"queue.compress":    getenvInt("QUEUE_COMPRESS", 4),
 	})
+
+	// cierre ordenado opcional
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        <-quit
+        router.Close()
+        os.Exit(0)
+    }()
 
 	log.Println("HTTP/1.0 server starting on :8080")
 	if err := server.ListenAndServe(":8080"); err != nil {

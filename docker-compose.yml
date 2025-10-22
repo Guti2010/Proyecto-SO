@@ -8,33 +8,37 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-    - WORKERS_ISPRIME=2
-    - QUEUE_ISPRIME=64
-    - WORKERS_FACTOR=2
-    - QUEUE_FACTOR=64
-    - WORKERS_PI=1
-    - QUEUE_PI=8
-    - WORKERS_MANDELBROT=1
-    - QUEUE_MANDELBROT=4
-    - WORKERS_MATRIXMUL=1
-    - QUEUE_MATRIXMUL=8
-    - WORKERS_WORDCOUNT=2
-    - QUEUE_WORDCOUNT=64
-    - WORKERS_GREP=2
-    - QUEUE_GREP=64
-    - WORKERS_HASHFILE=2
-    - QUEUE_HASHFILE=64
-    - WORKERS_SLEEP=2
-    - QUEUE_SLEEP=8
-    - WORKERS_SPIN=2
-    - QUEUE_SPIN=8
-    - WORKERS_SORTFILE=1
-    - QUEUE_SORTFILE=4
-    - WORKERS_COMPRESS=1
-    - QUEUE_COMPRESS=4
+      - WORKERS_ISPRIME=2
+      - QUEUE_ISPRIME=64
+      - WORKERS_FACTOR=2
+      - QUEUE_FACTOR=64
+      - WORKERS_PI=1
+      - QUEUE_PI=8
+      - WORKERS_MANDELBROT=1
+      - QUEUE_MANDELBROT=4
+      - WORKERS_MATRIXMUL=1
+      - QUEUE_MATRIXMUL=8
+      - WORKERS_WORDCOUNT=2
+      - QUEUE_WORDCOUNT=64
+      - WORKERS_GREP=2
+      - QUEUE_GREP=64
+      - WORKERS_HASHFILE=2
+      - QUEUE_HASHFILE=64
+      - WORKERS_SLEEP=2
+      - QUEUE_SLEEP=8
+      - WORKERS_SPIN=2
+      - QUEUE_SPIN=8
+      - WORKERS_SORTFILE=1
+      - QUEUE_SORTFILE=4
+      - WORKERS_COMPRESS=1
+      - QUEUE_COMPRESS=4
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "curl --http1.0 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/status | grep -q '^200$'"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
 
-
-
+    restart: unless-stopped
 
   dev:
     image: golang:1.22-bookworm

@@ -33,39 +33,45 @@ func InitPools(cfg map[string]int) {
 	_ = manager.Register("spin", sched.NewPool("spin", spinTF, wSpin, qSpin))
 	// CPU
 	_ = manager.Register("isprime", sched.NewPool("isprime",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.IsPrimeJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.IsPrimeJSONCtx(ctx, p) },
 		cfg["workers.isprime"], cfg["queue.isprime"]))
+
 	_ = manager.Register("factor", sched.NewPool("factor",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.FactorJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.FactorJSONCtx(ctx, p) },
 		cfg["workers.factor"], cfg["queue.factor"]))
+
 	_ = manager.Register("pi", sched.NewPool("pi",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.PiJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.PiJSONCtx(ctx, p) },
 		cfg["workers.pi"], cfg["queue.pi"]))
+
 	_ = manager.Register("mandelbrot", sched.NewPool("mandelbrot",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.MandelbrotJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.MandelbrotJSONCtx(ctx, p) },
 		cfg["workers.mandelbrot"], cfg["queue.mandelbrot"]))
+
 	_ = manager.Register("matrixmul", sched.NewPool("matrixmul",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.MatrixMulHash(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.MatrixMulHashCtx(ctx, p) },
 		cfg["workers.matrixmul"], cfg["queue.matrixmul"]))
+
 
 	// IO
 	_ = manager.Register("wordcount", sched.NewPool("wordcount",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.WordCountJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.WordCountJSONCtx(ctx, p) },
 		cfg["workers.wordcount"], cfg["queue.wordcount"]))
+
 	_ = manager.Register("grep", sched.NewPool("grep",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.GrepJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.GrepJSONCtx(ctx, p) },
 		cfg["workers.grep"], cfg["queue.grep"]))
+
 	_ = manager.Register("hashfile", sched.NewPool("hashfile",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.HashFileJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.HashFileJSONCtx(ctx, p) },
 		cfg["workers.hashfile"], cfg["queue.hashfile"]))
 
-	// IO (agrega estas dos líneas)
 	_ = manager.Register("sortfile", sched.NewPool("sortfile",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.SortFileJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.SortFileJSONCtx(ctx, p) },
 		cfg["workers.sortfile"], cfg["queue.sortfile"]))
 
 	_ = manager.Register("compress", sched.NewPool("compress",
-		func(_ context.Context, p map[string]string) resp.Result { return handlers.CompressJSON(p) },
+		func(ctx context.Context, p map[string]string) resp.Result { return handlers.CompressJSONCtx(ctx, p) },
 		cfg["workers.compress"], cfg["queue.compress"]))
 
 }
@@ -85,7 +91,36 @@ func Dispatch(method, target string) resp.Result {
 	case "/help":
 		return resp.PlainOK(handlers.HelpText())
 	case "/status":
-		return resp.JSONOK(handlers.StatusJSON())
+		// resumen por pool, no todo el bloque de métricas
+		// manager.MetricsJSON() ya existe; lo convertimos a resumen
+		var raw map[string]any
+		_ = json.Unmarshal([]byte(manager.MetricsJSON()), &raw)
+
+		pools := make(map[string]any, len(raw))
+		for name, v := range raw {
+			m := v.(map[string]any)
+			w := m["workers"].(map[string]any)
+			pools[name] = map[string]any{
+				"workers": map[string]any{
+					"total": w["total"],
+					"busy":  w["busy"],
+					"idle":  w["idle"],
+				},
+				"queue_len": m["queue_len"],
+				"queue_cap": m["queue_cap"],
+			}
+		}
+
+		out := map[string]any{
+			"pid":         server.PID(),
+			"uptime_ms":   server.Uptime().Milliseconds(),
+			"started_at":  server.StartedAt().UTC().Format(time.RFC3339Nano),
+			"connections": server.ConnCount(),
+			"pools":       pools,
+		}
+		b, _ := json.Marshal(out)
+		return resp.JSONOK(string(b))
+
 	case "/timestamp":
 		return resp.JSONOK(handlers.TimestampJSON())
 	case "/reverse":
@@ -128,45 +163,6 @@ func Dispatch(method, target string) resp.Result {
 			}
 		}
 		return resp.PlainOK("ok " + strconv.Itoa(ok) + "/" + strconv.Itoa(n) + "\n")
-	
-	case "/jobs/submit":
-		task := args["task"]
-		if task == "" {
-			return resp.BadReq("task", "task=<pool_name> required")
-		}
-		// timeout de ejecución (ms)
-		tms := atoi(args["timeout_ms"])
-		if tms <= 0 {
-			tms = 30000
-		}
-		// Filtra args: no pasar "task" ni "timeout_ms" al worker
-		params := make(map[string]string, len(args))
-		for k, v := range args {
-			if k == "task" || k == "timeout_ms" {
-				continue
-			}
-			params[k] = v
-		}
-		id := jobman.Submit(task, params, time.Duration(tms)*time.Millisecond)
-		if id == "" {
-			return resp.NotFound("no_pool", "pool not found")
-		}
-		out := map[string]any{"job_id": id, "status": "queued"}
-		b, _ := json.Marshal(out)
-		return resp.JSONOK(string(b))
-
-	case "/jobs/get":
-		id := args["id"]
-		if id == "" {
-			return resp.BadReq("id", "id required")
-		}
-		if js, ok := jobman.SnapshotJSON(id); ok {
-			return resp.JSONOK(js)
-		}
-		return resp.NotFound("not_found", "job not found")
-
-	case "/jobs/list":
-		return resp.JSONOK(jobman.ListJSON())
 
 	case "/metrics":
 		return resp.JSONOK(manager.MetricsJSON())
@@ -205,6 +201,76 @@ func Dispatch(method, target string) resp.Result {
 		r, _ := submitSync("sortfile", args, 10*time.Minute); return r
 	case "/compress":
 		r, _ := submitSync("compress", args, 10*time.Minute); return r
+
+	// --- Gestor de jobs ---
+	
+	case "/jobs/submit":
+		task := args["task"]
+		if task == "" {
+			return resp.BadReq("task", "task=<pool_name> required")
+		}
+		tms := atoi(args["timeout_ms"])
+		if tms <= 0 {
+			tms = 30000
+		}
+		params := make(map[string]string, len(args))
+		for k, v := range args {
+			if k == "task" || k == "timeout_ms" {
+				continue
+			}
+			params[k] = v
+		}
+		id := jobman.Submit(task, params, time.Duration(tms)*time.Millisecond)
+		if id == "" {
+			return resp.NotFound("no_pool", "pool not found")
+		}
+		out := map[string]any{"job_id": id, "status": "queued"}
+		b, _ := json.Marshal(out)
+		return resp.JSONOK(string(b))
+
+	case "/jobs/status":
+		id := args["id"]
+		if id == "" {
+			return resp.BadReq("id", "id required")
+		}
+		if js, ok := jobman.SnapshotJSON(id); ok {
+			return resp.JSONOK(js)
+		}
+		return resp.NotFound("not_found", "job not found")
+
+	case "/jobs/result":
+		id := args["id"]
+		if id == "" {
+			return resp.BadReq("id", "id required")
+		}
+		body, ok, err := jobman.ResultJSON(id)
+		if !ok {
+			return resp.NotFound("not_found", "job not found")
+		}
+		if err != nil {
+			// not_ready
+			return resp.BadReq("not_ready", "job not finished yet")
+		}
+		return resp.JSONOK(body)
+
+	case "/jobs/cancel":
+		id := args["id"]
+		if id == "" {
+			return resp.BadReq("id", "id required")
+		}
+		st, ok := jobman.Cancel(id)
+		if !ok {
+			return resp.NotFound("not_found", "job not found")
+		}
+		out := map[string]any{"status": st}
+		b, _ := json.Marshal(out)
+		return resp.JSONOK(string(b))
+
+
+	case "/jobs/list":
+		return resp.JSONOK(jobman.ListJSON())
+	
+	
 	}
 
 	return resp.NotFound("not_found", "route")
@@ -224,3 +290,11 @@ func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
 }
+
+// router/router.go
+func Close() {
+    if jobman != nil {
+        jobman.Close()
+    }
+}
+

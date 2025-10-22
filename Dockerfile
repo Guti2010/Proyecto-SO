@@ -8,6 +8,9 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags="-s -w" -o /server ./cmd/server
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # Etapa de runtime: imagen mínima sin intérpretes ni shell
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /app
