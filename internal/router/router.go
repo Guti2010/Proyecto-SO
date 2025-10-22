@@ -91,36 +91,8 @@ func Dispatch(method, target string) resp.Result {
 	case "/help":
 		return resp.PlainOK(handlers.HelpText())
 	case "/status":
-		// resumen por pool, no todo el bloque de métricas
-		// manager.MetricsJSON() ya existe; lo convertimos a resumen
-		var raw map[string]any
-		_ = json.Unmarshal([]byte(manager.MetricsJSON()), &raw)
-
-		pools := make(map[string]any, len(raw))
-		for name, v := range raw {
-			m := v.(map[string]any)
-			w := m["workers"].(map[string]any)
-			pools[name] = map[string]any{
-				"workers": map[string]any{
-					"total": w["total"],
-					"busy":  w["busy"],
-					"idle":  w["idle"],
-				},
-				"queue_len": m["queue_len"],
-				"queue_cap": m["queue_cap"],
-			}
-		}
-
-		out := map[string]any{
-			"pid":         server.PID(),
-			"uptime_ms":   server.Uptime().Milliseconds(),
-			"started_at":  server.StartedAt().UTC().Format(time.RFC3339Nano),
-			"connections": server.ConnCount(),
-			"pools":       pools,
-		}
-		b, _ := json.Marshal(out)
-		return resp.JSONOK(string(b))
-
+		// quítalo de aquí para evitar importar server
+		return resp.NotFound("moved", "status handled by server")
 	case "/timestamp":
 		return resp.JSONOK(handlers.TimestampJSON())
 	case "/reverse":
@@ -297,4 +269,28 @@ func Close() {
         jobman.Close()
     }
 }
+
+// PoolsSummary devuelve un mapa resumido por pool para /status.
+// NO usa server ni datos de proceso, evita ciclos.
+func PoolsSummary() map[string]any {
+	var raw map[string]any
+	_ = json.Unmarshal([]byte(manager.MetricsJSON()), &raw)
+
+	pools := make(map[string]any, len(raw))
+	for name, v := range raw {
+		m := v.(map[string]any)
+		w := m["workers"].(map[string]any)
+		pools[name] = map[string]any{
+			"workers": map[string]any{
+				"total": w["total"],
+				"busy":  w["busy"],
+				"idle":  w["idle"],
+			},
+			"queue_len": m["queue_len"],
+			"queue_cap": m["queue_cap"],
+		}
+	}
+	return pools
+}
+
 

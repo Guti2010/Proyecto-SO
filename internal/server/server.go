@@ -2,45 +2,37 @@ package server
 
 import (
 	"bufio"
+	"encoding/json"
 	"net"
-	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
+	"os"
 
 	"so-http10-demo/internal/http10"
 	"so-http10-demo/internal/router"
 	"so-http10-demo/internal/util"
 )
 
-// ---- runtime (para /status) ----
 var (
-	started  = time.Now()
-	connSeen uint64
+	startedAt = time.Now()
+	connCount uint64
 )
 
-func Uptime() time.Duration        { return time.Since(started) }
-func ConnCount() uint64            { return atomic.LoadUint64(&connSeen) }
-func PID() int                     { return os.Getpid() }
-func StartedAt() time.Time         { return started }
-func markConnAccepted()            { atomic.AddUint64(&connSeen, 1) }
+func pid() int              { return os.Getpid() }           // importa "os"
+func uptime() time.Duration { return time.Since(startedAt) }
+func conns() uint64         { return atomic.LoadUint64(&connCount) }
 
-// HandleConn procesa exactamente una petición HTTP/1.0 y cierra la conexión.
-//  - Parseo estricto HTTP/1.0
-//  - Trazabilidad: X-Request-Id (+ headers de pools como X-Worker-Id)
-//  - Delegación al router
-//  - Respuestas con Content-Length y Connection: close
 func HandleConn(c net.Conn) {
 	defer c.Close()
 
-	// Identificador de trazabilidad por respuesta.
 	trace := map[string]string{
 		"X-Request-Id": util.NewReqID(),
+		"X-Worker-Pid": strconv.Itoa(pid()),
 		"Connection":   "close",
-		// Nota: X-Worker-Id vendrá desde res.Headers cuando el handler provenga de un pool.
 	}
 
-	// Parseo de la request (request-line + headers).
+	// Parseo HTTP/1.0
 	r := bufio.NewReader(c)
 	req, err := http10.ParseRequest(r)
 	if err != nil {
@@ -48,33 +40,48 @@ func HandleConn(c net.Conn) {
 		return
 	}
 
-	// Enrutamiento
-	res := router.Dispatch(req.Method, req.Target)
-
-	// Mezcla de headers extra del resultado (p. ej. X-Worker-Id desde el pool).
-	if res.Headers != nil {
-		for k, v := range res.Headers {
-			if k == "" || v == "" {
-				continue
+	// Intercepta /status aquí (evita importar server en router)
+	if req.Method == "GET" {
+		path, _ := http10.SplitTarget(req.Target)
+		if path == "/status" {
+			out := map[string]any{
+				"pid":         pid(),
+				"uptime_ms":   uptime().Milliseconds(),
+				"started_at":  startedAt.UTC().Format(time.RFC3339Nano),
+				"connections": conns(),
+				"pools":       router.PoolsSummary(), // <- viene del router
 			}
-			trace[k] = v
+			b, _ := json.Marshal(out)
+			http10.WriteJSONH(c, 200, string(b), trace)
+			return
 		}
 	}
 
-	// Serialización
+	// Resto de rutas
+	res := router.Dispatch(req.Method, req.Target)
+
+	// Mezcla headers de trazabilidad con los del Result (si tienes ese campo)
+	hdrs := map[string]string{}
+	for k, v := range trace {
+		hdrs[k] = v
+	}
+	if res.Headers != nil {
+		for k, v := range res.Headers {
+			hdrs[k] = v
+		}
+	}
+
 	if res.JSON {
 		if res.Err != nil {
-			http10.WriteErrorJSON(c, res.Status, res.Err.Code, res.Err.Detail, trace)
+			http10.WriteErrorJSON(c, res.Status, res.Err.Code, res.Err.Detail, hdrs)
 		} else {
-			http10.WriteJSONH(c, res.Status, res.Body, trace)
+			http10.WriteJSONH(c, res.Status, res.Body, hdrs)
 		}
 	} else {
-		http10.WritePlainH(c, res.Status, res.Body, trace)
+		http10.WritePlainH(c, res.Status, res.Body, hdrs)
 	}
 }
 
-// ListenAndServe abre un listener TCP en addr y atiende conexiones
-// lanzando una goroutine por cada cliente. Bloquea hasta error fatal.
 func ListenAndServe(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -87,7 +94,7 @@ func ListenAndServe(addr string) error {
 		if err != nil {
 			return err
 		}
-		markConnAccepted()
+		atomic.AddUint64(&connCount, 1) // cuenta conexiones aceptadas
 		go HandleConn(conn)
 	}
 }
