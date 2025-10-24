@@ -47,7 +47,6 @@ func main() {
 	"queue.grep":         getenvInt("QUEUE_GREP", 64),
 	"workers.hashfile":   getenvInt("WORKERS_HASHFILE", 2),
 	"queue.hashfile":     getenvInt("QUEUE_HASHFILE", 64),
-	// NUEVOS:
 	"workers.sortfile":  getenvInt("WORKERS_SORTFILE", 1),
 	"queue.sortfile":    getenvInt("QUEUE_SORTFILE", 4),
 	"workers.compress":  getenvInt("WORKERS_COMPRESS", 1),

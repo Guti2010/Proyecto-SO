@@ -89,22 +89,21 @@ func Dispatch(method, target string) resp.Result {
 	case "/":
 		return resp.PlainOK("hola mundo\n")
 	case "/help":
-		return resp.PlainOK(handlers.HelpText())
+		return handlers.HelpTextRes()
 	case "/status":
-		// quítalo de aquí para evitar importar server
 		return resp.NotFound("moved", "status handled by server")
 	case "/timestamp":
-		return resp.JSONOK(handlers.TimestampJSON())
+		return handlers.TimestampJSONRes()
 	case "/reverse":
-		return resp.PlainOK(handlers.Reverse(args["text"]))
+		return handlers.ReverseJSON(args)
 	case "/toupper":
-    	return resp.PlainOK(handlers.ToUpper(args["text"])) 
+    	return handlers.ToUpperJSON(args)
 	case "/hash":
-		return resp.JSONOK(handlers.HashJSON(args["text"]))
+		return handlers.HashTextJSON(args)
 	case "/random":
-		return resp.JSONOK(handlers.RandomJSON(atoi(args["count"]), atoi(args["min"]), atoi(args["max"])))
+		return handlers.RandomJSONRes(args)
 	case "/fibonacci":
-		return resp.PlainOK(handlers.FibonacciText(atoi(args["num"])))
+		return handlers.FibonacciTextRes(args)
 	case "/createfile":
 		return handlers.CreateFile(args)
 	case "/deletefile":
