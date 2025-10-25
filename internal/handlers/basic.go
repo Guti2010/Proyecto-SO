@@ -109,34 +109,34 @@ func fibonacciCore(n int) string {
 //   * Devuelve resp.Result con códigos y mensajes coherentes.
 // -------------------------------------------------
 
-// Help devuelve el listado de rutas disponibles.
-// Formato: texto plano (200).
+// Help devuelve el listado de rutas disponibles (texto plano).
 func Help() resp.Result {
 	return resp.PlainOK(strings.TrimSpace(`
 /                      -> hola mundo
 /help                  -> este listado
 /status                -> estado del proceso + pools (pid, uptime, conns, colas, workers)
-/metrics               -> métricas por pool (latencias, colas, workers, contadores)
+/metrics               -> metricas por pool (latencias, colas por prioridad, workers, contadores)
 
-/fibonacci?num=N       -> N-ésimo (iterativo)
-/reverse?text=abc      -> invierte texto
-/toupper?text=abc      -> a MAYÚSCULAS
-/random?count=n&min=a&max=b -> n enteros aleatorios
-/timestamp             -> JSON con epoch/UTC
-/hash?text=abc         -> SHA-256 (hex)
+# Basicas
+/fibonacci?num=N
+/reverse?text=abc
+/toupper?text=abc
+/random?count=n&min=a&max=b
+/timestamp
+/hash?text=abc
 
-/createfile?name=FILE&content=txt&repeat=x
+# Archivos (basico)
+/createfile?name=FILE&content=txt&repeat=x[&on_exist=rename|overwrite]
 /deletefile?name=FILE
 
-# Pools / simulación
+# Pools / simulacion
 /sleep?seconds=s
 /simulate?seconds=s&task=sleep|spin
 /loadtest?tasks=n&sleep=s
 
 # CPU-bound
-/isprime?n=NUM
+/isprime?n=NUM[&method=division|miller-rabin]
 /factor?n=NUM
-/pi?digits=D[&algo=spigot|chudnovsky][&timeout_ms=T]
 /mandelbrot?width=W&height=H&max_iter=I
 /matrixmul?size=N&seed=S
 
@@ -145,8 +145,9 @@ func Help() resp.Result {
 /grep?name=FILE&pattern=REGEX
 /hashfile?name=FILE[&algo=sha256]
 /sortfile?name=FILE[&algo=merge|quick][&chunksize=N]
-/compress?name=FILE[&codec=gzip]   (xz no disponible)
+/compress?name=FILE[&codec=gzip|xz]
 
+# Jobs (ejecucion asincrona con colas por prioridad)
 /jobs/submit?task=TASK&<params>[&timeout_ms=MS][&prio=low|normal|high]
 /jobs/status?id=JOBID
 /jobs/result?id=JOBID
@@ -154,6 +155,7 @@ func Help() resp.Result {
 /jobs/list
 `) + "\n")
 }
+
 
 // Timestamp devuelve JSON con epoch y UTC.
 // 200 + JSON; no requiere parámetros.
