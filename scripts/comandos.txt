@@ -1,0 +1,5 @@
+powershell -ExecutionPolicy Bypass -File .\scripts\test_basic.ps1
+
+powershell -ExecutionPolicy Bypass -File .\scripts\test_files.ps1
+
+powershell -ExecutionPolicy Bypass -File .\scripts\test_cpu.ps1

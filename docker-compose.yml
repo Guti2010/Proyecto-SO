@@ -8,6 +8,9 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      - TIMEOUT_CPU=60s
+      - TIMEOUT_IO=120s
+
       - WORKERS_ISPRIME=2
       - QUEUE_ISPRIME=64
       - WORKERS_FACTOR=2
