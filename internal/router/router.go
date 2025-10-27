@@ -255,9 +255,15 @@ func Dispatch(method, target string) resp.Result {
 
 	case "/jobs/list":
 		return resp.JSONOK(jobman.ListJSON())
+
 	}
 
+	
+
+
 	return resp.NotFound("not_found", "route")
+
+	
 }
 
 // submitSync encola con timeout y espera resultado/timeout de ejecución.
