@@ -1014,3 +1014,4 @@ func TestDeriveProgressETA_Completed(t *testing.T) {
 		t.Fatalf("eta esperado 0, got %v", eta)
 	}
 }
+

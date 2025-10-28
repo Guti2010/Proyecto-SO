@@ -273,7 +273,6 @@ func (p *Pool) Start() {
 	})
 }
 
-
 // metrics devuelve un snapshot serializable para /metrics.
 func (p *Pool) metrics() map[string]any {
 	sub := atomic.LoadUint64(&p.submitted)
