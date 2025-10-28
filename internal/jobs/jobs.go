@@ -235,7 +235,6 @@ func (m *Manager) Submit(task string, params map[string]string, execTimeout time
     return id
 }
 
-
 // Cancel intenta cancelar: si está queued → canceled; si running/done → not_cancelable.
 func (m *Manager) Cancel(id string) (string, bool) {
     m.mu.Lock()
@@ -365,3 +364,4 @@ func deriveProgressETA(j *Job) (*int, *int64) {
 		return nil, nil
 	}
 }
+
